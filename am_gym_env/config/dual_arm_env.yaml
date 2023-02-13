@@ -1,0 +1,10 @@
+Base:
+  m: 1 # kg
+  l: 1 # m
+  offset: 0.25 # m
+Link:
+  m: 1 # kg
+  l: 0.15 # m
+General:
+  ts: 0.01 # s
+  g : 9.81 # m/s^2
