@@ -117,13 +117,23 @@ class DualArmAM(gym.Env):
 
     def step(self, action):
         
-        # Get the accelerations from the dynamic function
-        self._base_acceleration, self._arm_acceleration = self.get_accelerations(action)
-        # Integrate RK4 to get the velocities and positions #TODO
-        self._base_position = self._base_position + self.ts * self._base_velocity
-        self._base_velocity = self._base_velocity + self.ts * self._base_acceleration
-        self._arm_position = self._arm_position + self.ts * self._arm_velocity
-        self._arm_velocity = self._arm_velocity + self.ts * self._arm_acceleration
+        # Accumulate the current state into the state vector x
+        x_0 = np.concatenate((self._base_position, self._arm_position, self._base_velocity, self._arm_velocity))
+        # Assume control input constant for the time interval
+        f = lambda x, t: self.dynamic_model(x, action)
+        x_dot = f(x_0, 0)
+        # Initiate the time vector upto the next time step
+        t = np.linspace(0, self.ts, num=10)
+        # Numerically integrate to find the next state
+        x_next = odeint(f, x_0, t)
+        
+        # Extract the actual state
+        self._base_position = x_next[-1,:3]
+        self._arm_position = x_next[-1,3:7]
+        self._base_velocity = x_next[-1,7:10]
+        self._arm_velocity = x_next[-1,10:14]
+        self._base_acceleration = x_dot[7:10]
+        self._arm_acceleration = x_dot[10:14]
         
         # An episode is done iff the agent has reached the target
         terminated = np.linalg.norm(self._base_position, ord=2) < 0.1
@@ -137,14 +147,15 @@ class DualArmAM(gym.Env):
         self.t_i = self.t_i + 1
         return observation, reward, terminated, False, info
 
-    def get_accelerations(self, action):
-        xb_ddot = np.array([0.0,-self.g, 0.0]);
-        xa_ddot = np.array([0.0,0.0,0.0,0.0]);
 
-        #TODO compute the actual dynamics of the system and feed them back
+    def dynamic_model(self, x, u):
+        x_dot = np.concatenate((x[7:14], [0,-self.g,0,0,0,0,0]))
 
-        return xb_ddot, xa_ddot
+        #TODO comput the actual dynamics
 
+        return x_dot
+
+        
     def log_state(self):
         self.log[self.index]["base_position"][:,self.t_i] = self._base_position
         self.log[self.index]["base_velocity"][:,self.t_i] = self._base_velocity
