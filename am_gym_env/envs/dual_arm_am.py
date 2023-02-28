@@ -94,8 +94,9 @@ class DualArmAM(gym.Env):
         super().reset(seed=seed)
 
         # Initialize the system in a certain region at random with zero velocity 
-        self._base_position = self.np_random.uniform(np.array([-2.0, 1.0, 0.0]),
-                                                    np.array([2.0, 4.0, 0.0]), size=3)
+        self._base_position = np.append(self.np_random.uniform(np.array([-2.0, 1.0]),
+                                                                     np.array([2.0, 4.0]), size=2),
+                                             0)
         self._base_velocity = np.zeros(3)
         self._base_acceleration = np.zeros(3)
 
@@ -123,7 +124,7 @@ class DualArmAM(gym.Env):
         f = lambda x, t: self.dynamic_model(x, action)
         x_dot = f(x_0, 0)
         # Initiate the time vector upto the next time step
-        t = np.linspace(0, self.ts, num=10)
+        t = np.linspace(0, self.ts, num=2)
         # Numerically integrate to find the next state
         x_next = odeint(f, x_0, t)
         
@@ -149,13 +150,52 @@ class DualArmAM(gym.Env):
 
 
     def dynamic_model(self, x, u):
-        x_dot = np.concatenate((x[7:14], [0,-self.g,0,0,0,0,0]))
+        
+        ctrl_contribution = self.get_control_contribution(x,u)
+        grvty_contribution = self.get_gravity_contribution(x)
+        dmpng_contribution = self.get_damping_contribution(x)
+        crls_contribution = self.get_coriolis_contribution(x)
+        ext_force = self.get_external_force_contribution(x)
+
+
+        x_dot = np.concatenate((x[7:14],
+                                ctrl_contribution 
+                              + grvty_contribution
+                              + dmpng_contribution
+                              + crls_contribution
+                              + ext_force))
 
         #TODO comput the actual dynamics
 
         return x_dot
 
+    def get_control_contribution(self, x, u):
         
+        sT = np.sin(x[2])
+        cT = np.cos(x[2])
+        return np.array([-sT * (u[0] + u[1]),
+                          cT * (u[0] + u[1]),
+                          0.5 * self.l_base * (u[1] - u[0]),
+                          u[2],
+                          u[3],
+                          u[4],
+                          u[5]])      
+    
+    def get_gravity_contribution(self, x):
+        return np.array([0, -(self.m_base + 4*self.m_link) * self.g, 0, 0, 0, 0, 0])
+        
+    def get_damping_contribution(self, x):
+        # TODO
+        return np.zeros(7)
+    
+    def get_coriolis_contribution(self, x):
+        # TODO
+        return np.zeros(7)
+
+    def get_external_force_contribution(self, x):
+        #TODO
+        return np.zeros(7)
+
     def log_state(self):
         self.log[self.index]["base_position"][:,self.t_i] = self._base_position
         self.log[self.index]["base_velocity"][:,self.t_i] = self._base_velocity
@@ -177,27 +217,27 @@ class DualArmAM(gym.Env):
                              self.log[0]["base_position"][1,0] + self.base[1,:], color="black")
 
         # Draw the initial positions of the robotic arms
-        self.rl = np.array([[0, 0], [0, -self.l_link]])
-        r1l1_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][0,0]), self.rl)) \
+        self.link = np.array([[0, 0], [0, -self.l_link]])
+        r1l1_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][0,0]), self.link)) \
                 - np.array([self.off,0])\
                 + self.log[0]["base_position"][0:2,0]
         r1l1_line, = ax.plot(r1l1_rot[:,0], r1l1_rot[:,1], color="black")
 
         r1l2_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][1,0]),
                                           np.matmul(self.rot(self.log[0]["arm_position"][0,0]),
-                                                    self.rl))
+                                                    self.link))
                    )\
                 + r1l1_rot[1,:]
         r1l2_line, = ax.plot(r1l2_rot[:,0], r1l2_rot[:,1], color="black")
 
-        r2l1_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][2,0]), self.rl)) \
+        r2l1_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][2,0]), self.link)) \
                 + np.array([self.off,0])\
                 + self.log[0]["base_position"][0:2,0]
         r2l1_line, = ax.plot(r2l1_rot[:,0], r2l1_rot[:,1], color="black")
 
         r2l2_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][3,0]),
                                           np.matmul(self.rot(self.log[0]["arm_position"][2,0]),
-                                                    self.rl))
+                                                    self.link))
                    )\
                 + r2l1_rot[1,:]
         r2l2_line, = ax.plot(r2l2_rot[:,0], r2l2_rot[:,1], color="black")
@@ -221,32 +261,36 @@ class DualArmAM(gym.Env):
 
         plt.show()
 
+
+
     def animate(self, i, 
                 base_line, r1l1_line, r1l2_line, r2l1_line, r2l2_line, joints_line):
+        
+        base_rot = self.rot(self.log[0]["base_position"][2,i])
+        base = base_rot @ self.base
 
-        base_line.set_data(self.log[0]["base_position"][0,i] + self.base[0,:],
-                      self.log[0]["base_position"][1,i] + self.base[1,:])
+        base_line.set_data(self.log[0]["base_position"][0,i] + base[0,:],
+                      self.log[0]["base_position"][1,i] + base[1,:])
 
-        r1l1_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][0,i]), self.rl)) \
-                - np.matmul(self.rot(self.log[0]["base_position"][2,i]), np.array([self.off,0]))\
+        r1l1_rot = np.transpose(self.rot(self.log[0]["arm_position"][0,i]) @ base_rot @ self.link) \
+                - self.rot(self.log[0]["base_position"][2,i]) @ np.array([self.off,0])\
                 + self.log[0]["base_position"][0:2,i]
         r1l1_line.set_data(r1l1_rot[:,0], r1l1_rot[:,1])
 
-        r1l2_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][1,i]),
-                                          np.matmul(self.rot(self.log[0]["arm_position"][0,i]),
-                                                    self.rl))
-                   )\
+        r1l2_rot = np.transpose(self.rot(self.log[0]["arm_position"][1,i]) @ (
+                                         self.rot(self.log[0]["arm_position"][0,i]) @
+                                         base_rot @ self.link))\
                 + r1l1_rot[1,:]
         r1l2_line.set_data(r1l2_rot[:,0], r1l2_rot[:,1])
 
-        r2l1_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][2,i]), self.rl)) \
-                + np.matmul(self.rot(self.log[0]["base_position"][2,i]), np.array([self.off,0]))\
+        r2l1_rot = np.transpose(self.rot(self.log[0]["arm_position"][2,i]) @ base_rot @ self.link) \
+                + self.rot(self.log[0]["base_position"][2,i]) @ np.array([self.off,0])\
                 + self.log[0]["base_position"][0:2,i]
         r2l1_line.set_data(r2l1_rot[:,0], r2l1_rot[:,1])
 
-        r2l2_rot = np.transpose(np.matmul(self.rot(self.log[0]["arm_position"][3,i]),
-                                          np.matmul(self.rot(self.log[0]["arm_position"][2,i]),
-                                                    self.rl))
+        r2l2_rot = np.transpose(self.rot(self.log[0]["arm_position"][3,i]) @
+                                          (self.rot(self.log[0]["arm_position"][2,i]) @
+                                                    base_rot @ self.link)
                    )\
                 + r2l1_rot[1,:]
         r2l2_line.set_data(r2l2_rot[:,0], r2l2_rot[:,1])
