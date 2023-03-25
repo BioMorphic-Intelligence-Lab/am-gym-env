@@ -39,7 +39,11 @@ SPEED_KNEE = 6
 
 INITIAL_RANDOM = 5
 
-HULL_POLY = [(-25, +1), (-25, +10), (+25, +10), (+24, +1)]
+HULL_POLY =  [(-30, -8), (-30, +1), (+30, +1), (+30, -8)]
+ROTOR_1_LEG_POLY = [(-30, +1), (-30, +6), (-28, +6), (-28, +1)]
+ROTOR_1_POLY = [(-40, +6), (-40, +11), (-20, +11), (-20, +6)]
+ROTOR_2_LEG_POLY = [(+30, +1), (+30, +6), (+28, +6), (+28, +1)]
+ROTOR_2_POLY = [(+40, +6), (+40, +11), (+20, +11), (+20, +6)]
 LEG_DOWN = -8 / SCALE
 LEG_W, LEG_H = 8 / SCALE, 34 / SCALE
 
@@ -53,15 +57,53 @@ TERRAIN_GRASS = 10  # low long are grass spots, in steps
 TERRAIN_STARTPAD = 20  # in steps
 FRICTION = 2.5
 
-HULL_FD = fixtureDef(
-    # TODO add multiple boxes together as one fixture def
+main_frame = fixtureDef(
     shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in HULL_POLY]),
     density=5.0,
     friction=0.1,
     categoryBits=0x0020,
     maskBits=0x001,  # collide only with ground
     restitution=0.0,
-)  # 0.99 bouncy
+)
+
+
+rotor1_leg = fixtureDef(
+    shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in ROTOR_1_LEG_POLY]),
+    density=5.0,
+    friction=0.1,
+    categoryBits=0x0020,
+    maskBits=0x001,  # collide only with ground
+    restitution=0.0,
+)
+
+rotor1 = fixtureDef(
+    shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in ROTOR_1_POLY]),
+    density=5.0,
+    friction=0.1,
+    categoryBits=0x0020,
+    maskBits=0x001,  # collide only with ground
+    restitution=0.0,
+)
+
+rotor2_leg = fixtureDef(
+    shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in ROTOR_2_LEG_POLY]),
+    density=5.0,
+    friction=0.1,
+    categoryBits=0x0020,
+    maskBits=0x001,  # collide only with ground
+    restitution=0.0,
+)
+
+rotor2 = fixtureDef(
+    shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in ROTOR_2_POLY]),
+    density=5.0,
+    friction=0.1,
+    categoryBits=0x0020,
+    maskBits=0x001,  # collide only with ground
+    restitution=0.0,
+)
+
+HULL_FD = [main_frame, rotor1_leg, rotor1, rotor2_leg, rotor2] 
 
 LEG_FD = fixtureDef(
     shape=polygonShape(box=(LEG_W / 2, LEG_H / 2)),
@@ -90,7 +132,7 @@ class ContactDetector(contactListener):
             self.env.hull == contact.fixtureA.body
             or self.env.hull == contact.fixtureB.body
         ):
-            self.env.game_over = True
+            pass #self.env.game_over = True
         for leg in [self.env.legs[1], self.env.legs[3]]:
             if leg in [contact.fixtureA.body, contact.fixtureB.body]:
                 leg.ground_contact = True
@@ -395,10 +437,10 @@ class DualArmAM(gym.Env, EzPickle):
         self._generate_terrain()
         self._generate_clouds()
 
-        init_x = 5 * TERRAIN_STEP * TERRAIN_STARTPAD / 2 
-        init_y = np.random.rand() * 45 * TERRAIN_STEP + TERRAIN_STEP  + 2 * LEG_H + TERRAIN_HEIGHT
+        self.init_x = 5 * TERRAIN_STEP * TERRAIN_STARTPAD / 2 
+        self.init_y = np.random.rand() * 45 * TERRAIN_STEP + TERRAIN_STEP  + 2 * LEG_H + TERRAIN_HEIGHT
         self.hull = self.world.CreateDynamicBody(
-            position=(init_x, init_y), fixtures=HULL_FD
+            position=(self.init_x, self.init_y), fixtures=HULL_FD
         )
         self.hull.color1 = (127, 51, 229)
         self.hull.color2 = (76, 76, 127)
@@ -410,7 +452,7 @@ class DualArmAM(gym.Env, EzPickle):
         self.joints: List[Box2D.b2RevoluteJoint] = []
         for i in [-1, +1]:
             leg = self.world.CreateDynamicBody(
-                position=(init_x, init_y - LEG_H / 2 - LEG_DOWN),
+                position=(self.init_x, self.init_y - LEG_H / 2 - LEG_DOWN),
                 angle=(i * 0.05),
                 fixtures=LEG_FD,
             )
@@ -432,7 +474,7 @@ class DualArmAM(gym.Env, EzPickle):
             self.joints.append(self.world.CreateJoint(rjd))
 
             lower = self.world.CreateDynamicBody(
-                position=(init_x, init_y - LEG_H * 3 / 2 - LEG_DOWN),
+                position=(self.init_x, self.init_y - LEG_H * 3 / 2 - LEG_DOWN),
                 angle=(i * 0.05),
                 fixtures=LOWER_FD,
             )
@@ -533,14 +575,9 @@ class DualArmAM(gym.Env, EzPickle):
 
         terminated = False
         if self.game_over or \
-           (pos[0] < 0 and
-            vel[0] == 0 and
-            vel[0] == 0):
+            (pos[1] < self.init_y and
+            np.sqrt(vel[0]**2 + vel[1]**2) < 0.025):
             reward = -100
-            terminated = True
-        if (pos[0] > (TERRAIN_LENGTH - TERRAIN_GRASS) * TERRAIN_STEP and
-            vel[0] == 0 and
-            vel[0] == 0):
             terminated = True
 
         if self.render_mode == "human":
