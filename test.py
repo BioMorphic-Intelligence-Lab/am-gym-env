@@ -27,12 +27,42 @@ while True:
         print("leg1 " + str([f"{x:+0.2f}" for x in s[9:14]]))
     steps += 1
 
-    a[0] = 0.45
-    a[1] = 0.45
-    a[2] = 0.07
-    a[3] = -0.01
-    a[4] = -0.07
-    a[5] = 0.01
+
+    ###################### Simple Heuristic: ###########################
+    ####### The quadrotor slowly descends while constant torque   ######
+    ####### on the joint motors                                   ######
+    ####################################################################
+    
+    theta = s[0]
+    thetadot = s[1]
+    xdot = s[2]
+    ydot = s[3]
+    j0 = s[4]
+    j0dot = s[5]
+    j1 = s[6]
+    j1dot = s[7]
+    j2 = s[9]
+    j2dot = s[10]
+    j3 = s[11]
+    j3dot = s[12]
+
+    # First the descending control of the quadrotor:
+    # Simple PD control on attitude while maintaining thrust
+    # That is a bit less then the gravity
+    k_att = 1
+    d_att = 0.1
+    a[0] = -k_att *theta + d_att * thetadot
+    a[1] = (k_att *theta + d_att * thetadot)
+
+    # Add thrust to have total thrust that (almost) matches gravity
+    addon = np.cos(theta) * 0.50
+    a[0] += addon
+    a[1] += addon
+
+    a[2] = 2.0
+    a[3] = 0.002
+    a[4] = -2.0
+    a[5] = -0.002
     
     if terminated or truncated:
         break
