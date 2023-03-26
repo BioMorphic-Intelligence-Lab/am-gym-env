@@ -2,7 +2,6 @@ import gymnasium as gym
 import numpy as np
 from dual_arm_am import DualArmAM
 
-# Heurisic: suboptimal, have no notion of balance.
 env = DualArmAM(render_mode='human')
 env._max_episode_steps = 600
 env.reset()
