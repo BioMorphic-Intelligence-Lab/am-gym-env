@@ -33,9 +33,11 @@ if TYPE_CHECKING:
 FPS = 50
 SCALE = 30.0  # affects how fast-paced the game is, forces should be adjusted as well
 
-MOTORS_TORQUE = 80
+MOTORS_TORQUE = 10
+MAX_FORCE_PROPS = 45
 SPEED_HIP = 4
 SPEED_KNEE = 6
+ACCELERATION_THRESHOLD = 750
 
 INITIAL_RANDOM = 5
 
@@ -45,7 +47,7 @@ ROTOR_1_POLY = [(-40, +6), (-40, +11), (-20, +11), (-20, +6)]
 ROTOR_2_LEG_POLY = [(+30, +1), (+30, +6), (+28, +6), (+28, +1)]
 ROTOR_2_POLY = [(+40, +6), (+40, +11), (+20, +11), (+20, +6)]
 LEG_DOWN = -8 / SCALE
-LEG_W, LEG_H = 8 / SCALE, 34 / SCALE
+LEG_W, LEG_H = 4 / SCALE, 20 / SCALE
 
 VIEWPORT_W = 1200
 VIEWPORT_H =  800
@@ -153,7 +155,7 @@ class DualArmAM(gym.Env, EzPickle):
 
     ## Action Space
     Actions are motor speed values in the [-1, 1] range for each of the
-    4 joints at both hips and knees. As well as the force prduced by the rotors [0, 1]
+    4 joints at both hips and knees. As well as the force produced by the rotors [0, 1]
 
     ## Observation Space
     State consists of hull angle speed, angular velocity, horizontal speed,
@@ -195,8 +197,6 @@ class DualArmAM(gym.Env, EzPickle):
         self.terrain: List[Box2D.b2Body] = []
         self.hull: Optional[Box2D.b2Body] = None
 
-        self.prev_shaping = None
-
         self.fd_polygon = fixtureDef(
             shape=polygonShape(vertices=[(0, 0), (1, 0), (1, -1), (0, -1)]),
             friction=FRICTION,
@@ -212,23 +212,21 @@ class DualArmAM(gym.Env, EzPickle):
         # 5 x the rated speed due to impulses from ground contact etc.
         low = np.array(
             [
-                -math.pi,
-                -5.0,
-                -5.0,
-                -5.0,
-                -math.pi,
-                -5.0,
-                -math.pi,
-                -5.0,
-                -0.0,
-                -math.pi,
-                -5.0,
-                -math.pi,
-                -5.0,
-                -0.0,
-            ]
-            + [-1.0] * 10
-        ).astype(np.float32)
+                -math.pi, # Hull Angle
+                -5.0,     # Hull Angular Speed
+                -5.0,     # Hull X Speed
+                -5.0,     # Hull Y Speed
+                -math.pi, # Joint 0 position
+                -5.0,     # Joint 0 speed
+                -math.pi, # Joint 1 position
+                -5.0,     # Joint 1 speed
+                -0.0,     # Leg 1 in contact?
+                -math.pi, # Joint 2 poistion
+                -5.0,     # Joint 2 speed
+                -math.pi, # Joint 3 position
+                -5.0,     # Joint 3 speed
+                -0.0,     # Leg 2 in contact?
+            ]).astype(np.float32)
         high = np.array(
             [
                 math.pi,
@@ -245,12 +243,10 @@ class DualArmAM(gym.Env, EzPickle):
                 math.pi,
                 5.0,
                 5.0,
-            ]
-            + [1.0] * 10
-        ).astype(np.float32)
+            ]).astype(np.float32)
         self.action_space = spaces.Box(
-            np.array([-1, -1, -1, -1]).astype(np.float32),
-            np.array([1, 1, 1, 1]).astype(np.float32),
+            np.array([0, 0, -1, -1, -1, -1]).astype(np.float32),
+            np.array([1, 1, 1, 1, 1, 1]).astype(np.float32),
         )
         self.observation_space = spaces.Box(low, high)
 
@@ -428,10 +424,12 @@ class DualArmAM(gym.Env, EzPickle):
     ):
         super().reset(seed=seed)
         self._destroy()
+
+        self.step_counter = 0
+
         self.world.contactListener_bug_workaround = ContactDetector(self)
         self.world.contactListener = self.world.contactListener_bug_workaround
         self.game_over = False
-        self.prev_shaping = None
         self.scroll = 0.0
 
         self._generate_terrain()
@@ -453,7 +451,7 @@ class DualArmAM(gym.Env, EzPickle):
         for i in [-1, +1]:
             leg = self.world.CreateDynamicBody(
                 position=(self.init_x, self.init_y - LEG_H / 2 - LEG_DOWN),
-                angle=(i * 0.05),
+                angle=(i * 0.5),
                 fixtures=LEG_FD,
             )
             leg.color1 = (153 - i * 25, 76 - i * 25, 127 - i * 25)
@@ -467,15 +465,15 @@ class DualArmAM(gym.Env, EzPickle):
                 enableLimit=True,
                 maxMotorTorque=MOTORS_TORQUE,
                 motorSpeed=i,
-                lowerAngle=-0.8,
-                upperAngle=1.1,
+                lowerAngle=-math.pi/2,
+                upperAngle=math.pi/2,
             )
             self.legs.append(leg)
             self.joints.append(self.world.CreateJoint(rjd))
 
             lower = self.world.CreateDynamicBody(
                 position=(self.init_x, self.init_y - LEG_H * 3 / 2 - LEG_DOWN),
-                angle=(i * 0.05),
+                angle=(i * 0.5),
                 fixtures=LOWER_FD,
             )
             lower.color1 = (153 - i * 25, 76 - i * 25, 127 - i * 25)
@@ -489,51 +487,61 @@ class DualArmAM(gym.Env, EzPickle):
                 enableLimit=True,
                 maxMotorTorque=MOTORS_TORQUE,
                 motorSpeed=1,
-                lowerAngle=-1.6,
-                upperAngle=-0.1,
+                lowerAngle=-math.pi/2,
+                upperAngle=math.pi/2,
             )
             lower.ground_contact = False
             self.legs.append(lower)
             self.joints.append(self.world.CreateJoint(rjd))
 
         self.drawlist = self.terrain + self.legs + [self.hull]
+        self.last_vel = [0.0, 0.0]
 
         if self.render_mode == "human":
             self.render()
-        return self.step(np.array([0, 0, 0, 0]))[0], {}
+
+        return self.step(np.array([0, 0, 0, 0, 0, 0]))[0], {}
 
     def step(self, action: np.ndarray):
         assert self.hull is not None
 
-        # self.hull.ApplyForceToCenter((0, 20), True) -- Uncomment this to receive a bit of stability help
-        control_speed = False  # Should be easier as well
-        if control_speed:
-            self.joints[0].motorSpeed = float(SPEED_HIP * np.clip(action[0], -1, 1))
-            self.joints[1].motorSpeed = float(SPEED_KNEE * np.clip(action[1], -1, 1))
-            self.joints[2].motorSpeed = float(SPEED_HIP * np.clip(action[2], -1, 1))
-            self.joints[3].motorSpeed = float(SPEED_KNEE * np.clip(action[3], -1, 1))
-        else:
-            self.joints[0].motorSpeed = float(SPEED_HIP * np.sign(action[0]))
-            self.joints[0].maxMotorTorque = float(
-                MOTORS_TORQUE * np.clip(np.abs(action[0]), 0, 1)
-            )
-            self.joints[1].motorSpeed = float(SPEED_KNEE * np.sign(action[1]))
-            self.joints[1].maxMotorTorque = float(
-                MOTORS_TORQUE * np.clip(np.abs(action[1]), 0, 1)
-            )
-            self.joints[2].motorSpeed = float(SPEED_HIP * np.sign(action[2]))
-            self.joints[2].maxMotorTorque = float(
-                MOTORS_TORQUE * np.clip(np.abs(action[2]), 0, 1)
-            )
-            self.joints[3].motorSpeed = float(SPEED_KNEE * np.sign(action[3]))
-            self.joints[3].maxMotorTorque = float(
-                MOTORS_TORQUE * np.clip(np.abs(action[3]), 0, 1)
-            )
+        # Increment counter
+        self.step_counter += 1 
+            
+        # Apply Forces from rotors
+        self.hull.ApplyForceToCenter((-MAX_FORCE_PROPS*action[0]*np.sin(self.hull.angle),
+                                        MAX_FORCE_PROPS*action[0]*np.cos(self.hull.angle)), True)
+        self.hull.ApplyForceToCenter((-MAX_FORCE_PROPS*action[1]*np.sin(self.hull.angle),
+                                        MAX_FORCE_PROPS*action[1]*np.cos(self.hull.angle)), True)
+        
+        # Apply Torques from rotors
+        self.hull.ApplyTorque(MAX_FORCE_PROPS*float(action[0] - action[1]), True)
+
+        self.joints[0].motorSpeed = float(SPEED_HIP * np.sign(action[2]))
+        self.joints[0].maxMotorTorque = float(
+            MOTORS_TORQUE * np.clip(np.abs(action[2]), 0, 1)
+        )
+        self.joints[1].motorSpeed = float(SPEED_KNEE * np.sign(action[3]))
+        self.joints[1].maxMotorTorque = float(
+            MOTORS_TORQUE * np.clip(np.abs(action[3]), 0, 1)
+        )
+        self.joints[2].motorSpeed = float(SPEED_HIP * np.sign(action[4]))
+        self.joints[2].maxMotorTorque = float(
+            MOTORS_TORQUE * np.clip(np.abs(action[4]), 0, 1)
+        )
+        self.joints[3].motorSpeed = float(SPEED_KNEE * np.sign(action[5]))
+        self.joints[3].maxMotorTorque = float(
+            MOTORS_TORQUE * np.clip(np.abs(action[5]), 0, 1)
+        )
 
         self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
 
         pos = self.hull.position
         vel = self.hull.linearVelocity
+        acc = (vel - self.last_vel) / (1.0 / FPS)
+
+        self.last_vel = np.array([self.hull.linearVelocity[0], self.hull.linearVelocity[1]])
+
 
         state = [
             self.hull.angle,  # Normal angles up to 0.5 here, but sure more is possible.
@@ -557,28 +565,28 @@ class DualArmAM(gym.Env, EzPickle):
 
         self.scroll = pos.x - VIEWPORT_W / SCALE / 5
 
-        shaping = (
-            130 * pos[0] / SCALE
-        )  # moving forward is a way to receive reward (normalized to get 300 on completion)
-        shaping -= 5.0 * abs(
-            state[0]
-        )  # keep head straight, other than that and falling, any behavior is unpunished
+        ######################## DEFAUL COST FUNCTION ########################################
+        # We penalize actuation and acceleration above some threshold
+        reward = 0.0
+        a = np.array(action)
+        reward -= 0.00055 * MAX_FORCE_PROPS * np.sum(np.clip(np.abs(a[:2]), 0, 1))
+        reward -= 0.00035 * MOTORS_TORQUE * np.sum(np.clip(np.abs(a[2:]), 0, 1))
 
-        reward = 0
-        if self.prev_shaping is not None:
-            reward = shaping - self.prev_shaping
-        self.prev_shaping = shaping
+        # We penalize accelerations above the threshold hard
+        reward -= (np.linalg.norm(acc) > ACCELERATION_THRESHOLD) * 1000 * np.linalg.norm(acc)
+        #####################################################################################
 
-        for a in action:
-            reward -= 0.00035 * MOTORS_TORQUE * np.clip(np.abs(a), 0, 1)
-            # normalized to about -50.0 using heuristic, more optimal agent should spend less
 
         terminated = False
         if self.game_over or \
             (pos[1] < self.init_y and
-            np.sqrt(vel[0]**2 + vel[1]**2) < 0.025):
-            reward = -100
+            np.sqrt(vel[0]**2 + vel[1]**2) < 0.00025):
             terminated = True
+
+        if self.step_counter >= self._max_episode_steps:
+            terminated = True
+            # Failed task -> penalize
+            reward -= 10000
 
         if self.render_mode == "human":
             self.render()
